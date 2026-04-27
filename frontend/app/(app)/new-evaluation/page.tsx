@@ -20,7 +20,7 @@ import { uploadBriefingFile, validateFile } from '@/lib/services/file-upload';
 // ---------------------------------------------------------------------------
 
 const AI_PROVIDERS: SelectOption[] = [
-  { value: '',       label: 'Predeterminado del servidor (Gemini)' },
+  { value: '',       label: 'Predeterminado del servidor (Gemini Vertex)' },
   { value: 'gemini', label: 'Gemini (Google)' },
   { value: 'groq',   label: 'Groq' },
   { value: 'openai', label: 'OpenAI' },
@@ -67,6 +67,15 @@ interface FormState {
   apiKey: string;
 }
 
+interface CooldownApiResponse {
+  success: boolean;
+  data?: {
+    remaining_seconds: number;
+    cooldown_seconds: number;
+    available: boolean;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -93,11 +102,34 @@ export default function NewEvaluationPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [defaultProviderCooldownRemaining, setDefaultProviderCooldownRemaining] = useState(0);
   
   // File upload state
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const isGeminiServerMode =
+    (form.provider === '' || form.provider === 'gemini') && form.apiKey.trim() === '';
+
+  const fetchDefaultProviderCooldown = async () => {
+    try {
+      const res = await fetch('/api/v1/evaluations/default-provider/cooldown');
+      if (!res.ok) return;
+      const payload = await res.json() as CooldownApiResponse;
+      if (payload.success && payload.data) {
+        setDefaultProviderCooldownRemaining(payload.data.remaining_seconds);
+      }
+    } catch {
+      // Cooldown check is best-effort; form still works with backend-side enforcement.
+    }
+  };
+
+  const formatRemaining = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
 
   // Load rubrics on mount
   useEffect(() => {
@@ -120,6 +152,22 @@ export default function NewEvaluationPage() {
         setRubricsLoading(false);
       });
   }, []);
+
+  useEffect(() => {
+    fetchDefaultProviderCooldown();
+    const interval = setInterval(fetchDefaultProviderCooldown, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (defaultProviderCooldownRemaining <= 0) return;
+
+    const timer = setInterval(() => {
+      setDefaultProviderCooldownRemaining((current) => Math.max(0, current - 1));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [defaultProviderCooldownRemaining]);
 
   // Model options depend on selected provider
   const modelOptions: SelectOption[] = form.provider
@@ -232,6 +280,10 @@ export default function NewEvaluationPage() {
 
       setSubmitSuccess(true);
       setForm({ rubricId: '', briefingFile: null, briefingServerPath: '', repoUrl: '', provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL, apiKey: '' });
+
+      if (isGeminiServerMode) {
+        fetchDefaultProviderCooldown();
+      }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Unexpected error');
     } finally {
@@ -250,6 +302,8 @@ export default function NewEvaluationPage() {
     form.rubricId !== '' &&
     form.briefingServerPath !== '' &&
     form.repoUrl.trim() !== '';
+
+  const isDefaultProviderBlocked = isGeminiServerMode && defaultProviderCooldownRemaining > 0;
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -328,13 +382,24 @@ export default function NewEvaluationPage() {
             {/* AI Provider */}
             <Select
               label="Proveedor de IA"
-              placeholder="Predeterminado del servidor (Gemini)"
+              placeholder="Predeterminado del servidor (Gemini Vertex)"
               options={AI_PROVIDERS}
               value={form.provider}
               onChange={handleProviderChange}
               helperText="Puedes elegir proveedor/modelo sin clave API para usar la configuración del servidor (.env)."
               fullWidth
             />
+
+            {isGeminiServerMode && (
+              <Alert
+                variant={isDefaultProviderBlocked ? 'warning' : 'info'}
+                message={
+                  isDefaultProviderBlocked
+                    ? `Gemini Vertex predeterminado en cooldown. Disponible en ${formatRemaining(defaultProviderCooldownRemaining)}.`
+                    : 'Gemini Vertex predeterminado disponible para una nueva evaluación.'
+                }
+              />
+            )}
 
             {/* Model */}
             <Select
@@ -383,11 +448,17 @@ export default function NewEvaluationPage() {
               variant="primary"
               size="lg"
               fullWidth
-              disabled={!isFormValid || isSubmitting}
+              disabled={!isFormValid || isSubmitting || isDefaultProviderBlocked}
               isLoading={isSubmitting}
             >
               Ejecutar Evaluación
             </Button>
+
+            {isDefaultProviderBlocked && (
+              <p className="text-xs text-amber-700 text-center">
+                Debes esperar {formatRemaining(defaultProviderCooldownRemaining)} antes de reutilizar el proveedor predeterminado.
+              </p>
+            )}
 
           </form>
         </CardContent>

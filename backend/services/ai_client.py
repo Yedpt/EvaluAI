@@ -4,7 +4,7 @@ from typing import Optional
 from openai import OpenAI
 import google.genai as genai
 from groq import Groq
-from core.settings import get_api_key
+from core.settings import get_api_key, settings
 from core.logging_config import logger
 from core.messages import Messages
 from langsmith import traceable
@@ -97,8 +97,22 @@ class AIClient:
 
         if self.provider == AIProvider.GEMINI:
             try:
-                api_key = self.api_key or get_api_key(AIProvider.GEMINI)
-                # For google.genai, we need to create a Client with the API key
+                # BYOK Gemini keeps using the Developer API key path.
+                if self.api_key:
+                    logger.info("AIClient Gemini path: Developer API (BYOK)")
+                    return genai.Client(api_key=self.api_key)
+
+                # Server default Gemini path can use Vertex AI with ADC.
+                if settings.VERTEX_ENABLED:
+                    logger.info("AIClient Gemini path: Vertex AI (server default)")
+                    return genai.Client(
+                        vertexai=True,
+                        project=settings.GCP_PROJECT_ID,
+                        location=settings.GCP_LOCATION,
+                    )
+
+                api_key = get_api_key(AIProvider.GEMINI)
+                logger.info("AIClient Gemini path: Developer API (env key)")
                 return genai.Client(api_key=api_key)
             except Exception as e:
                 raise ValueError(Messages.AIProvider.INITIALIZATION_FAILED.format(

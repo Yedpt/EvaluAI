@@ -16,6 +16,9 @@ langchain-core==1.2.16
 langchain-openai==1.1.10
 langchain-text-splitters==1.1.1
 langchain-google-genai==4.2.1
+langchain-google-vertexai==3.2.2
+tree-sitter==0.25.2
+tree-sitter-languages==1.10.2
 faiss-cpu==1.13.2
 pypdf==6.0.0
 tiktoken==0.12.0
