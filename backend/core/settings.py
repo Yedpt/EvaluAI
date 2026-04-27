@@ -8,7 +8,7 @@ This module provides centralized configuration management with:
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
+from pydantic import model_validator
 from enum import Enum
 
 
@@ -59,10 +59,23 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = ""
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = ""
+    GEMINI_MODEL_VERTEX: str = "gemini-2.5-flash"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = ""
     GEMINI_EMBEDDING_MODEL: str = "models/gemini-embedding-001"
+    GEMINI_EMBEDDING_MODEL_VERTEX: str = "text-embedding-005"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    VERTEX_ENABLED: bool = False
+    GCP_PROJECT_ID: str = ""
+    GCP_LOCATION: str = "europe-west1"
+    GOOGLE_APPLICATION_CREDENTIALS_JSON: str = ""
+
+    # Abuse protection for server-default provider
+    ENABLE_DEFAULT_PROVIDER_COOLDOWN: bool = True
+    DEFAULT_PROVIDER_COOLDOWN_SECONDS: int = 900
+    ENABLE_EVALUATION_RATE_LIMIT: bool = True
+    EVALUATION_RATE_LIMIT_MAX_REQUESTS: int = 5
+    EVALUATION_RATE_LIMIT_WINDOW_SECONDS: int = 600
     
 
     # GitLoader Configuration
@@ -88,21 +101,43 @@ class Settings(BaseSettings):
         extra="ignore"  # Ignore extra environment variables
     )
 
-    @field_validator('OPENAI_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', mode='before')
-    @classmethod
-    def validate_api_keys(cls, v: str, info) -> str:
-        """Validate that API keys are provided."""
-        if not v:
-            raise ValueError(f"{info.field_name} must be provided in .env file")
-        return v
-    
-    @field_validator('OPENAI_MODEL', 'GEMINI_MODEL', 'GROQ_MODEL', mode='before')
-    @classmethod
-    def validate_models(cls, v: str, info) -> str:
-        """Validate that models are provided."""
-        if not v:
-            raise ValueError(f"{info.field_name} must be provided in .env file")
-        return v
+    @model_validator(mode="after")
+    def validate_ai_configuration(self):
+        """Validate required settings with Vertex-aware conditions."""
+        missing = []
+
+        # Always required for non-Gemini providers
+        if not self.OPENAI_API_KEY:
+            missing.append("OPENAI_API_KEY")
+        if not self.OPENAI_MODEL:
+            missing.append("OPENAI_MODEL")
+        if not self.GROQ_API_KEY:
+            missing.append("GROQ_API_KEY")
+        if not self.GROQ_MODEL:
+            missing.append("GROQ_MODEL")
+
+        # Gemini requirements depend on the selected server mode
+        if self.VERTEX_ENABLED:
+            if not self.GCP_PROJECT_ID:
+                missing.append("GCP_PROJECT_ID")
+            if not self.GCP_LOCATION:
+                missing.append("GCP_LOCATION")
+            if not self.GEMINI_MODEL_VERTEX:
+                missing.append("GEMINI_MODEL_VERTEX")
+            if not self.GEMINI_EMBEDDING_MODEL_VERTEX:
+                missing.append("GEMINI_EMBEDDING_MODEL_VERTEX")
+        else:
+            if not self.GEMINI_API_KEY:
+                missing.append("GEMINI_API_KEY")
+            if not self.GEMINI_MODEL:
+                missing.append("GEMINI_MODEL")
+            if not self.GEMINI_EMBEDDING_MODEL:
+                missing.append("GEMINI_EMBEDDING_MODEL")
+
+        if missing:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
+        return self
     
 
 # Global settings instance
@@ -126,7 +161,7 @@ def get_model(provider: AIProvider) -> str:
     if provider == AIProvider.OPENAI:
         return settings.OPENAI_MODEL
     elif provider == AIProvider.GEMINI:
-        return settings.GEMINI_MODEL
+        return settings.GEMINI_MODEL_VERTEX if settings.VERTEX_ENABLED else settings.GEMINI_MODEL
     elif provider == AIProvider.GROQ:
         return settings.GROQ_MODEL
     else:

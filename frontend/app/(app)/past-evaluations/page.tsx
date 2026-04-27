@@ -89,6 +89,14 @@ function scoreBadgeClass(score: number | null): string {
   return 'bg-red-100 text-red-700';
 }
 
+function formatScore(score: number | null): string {
+  if (score === null) return '—';
+  return score.toLocaleString('es-ES', {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+}
+
 /** Tailwind classes for the status pill. */
 function statusPillClass(status: EvaluationResponse['status']): string {
   switch (status) {
@@ -314,7 +322,7 @@ export default function PastEvaluationsPage() {
       ev.id,
       ev.repo_url,
       rubricMap[ev.rubric_id] ?? `Rubric #${ev.rubric_id}`,
-      ev.total_score ?? '',
+      ev.total_score !== null ? formatScore(ev.total_score) : '',
       ev.status,
       formatDate(ev.created_at),
     ]);
@@ -570,7 +578,7 @@ export default function PastEvaluationsPage() {
                         <span
                           className={`inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold ${scoreBadgeClass(ev.total_score)}`}
                         >
-                          {ev.total_score !== null ? Math.round(ev.total_score) : '—'}
+                          {formatScore(ev.total_score)}
                         </span>
                       </td>
 

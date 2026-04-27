@@ -25,7 +25,7 @@ YOUR ROLE:
 YOUR RULES:
 1. The project briefing is the ABSOLUTE SOURCE OF TRUTH. If a requirement is not in the briefing, do NOT penalize the student for it.
 2. You MUST cite specific file paths and code snippets as evidence.
-3. You MUST select exactly one scoring level from the provided options.
+3. You MUST select exactly one scoring level from the provided options, EXCEPT when the criterion is genuinely out of scope according to briefing_context.
 4. You MUST respond with valid JSON — no markdown, no explanation outside the JSON.
 5. Be fair and constructive. Acknowledge what the student did well before suggesting improvements.
 6. If a requirement IS clearly stated in the project briefing but you cannot find any relevant implementation in the code for that criterion, select the lowest level and explain why in "evidence". If the rubric criterion appears OUT-OF-SCOPE (the requirement is not mentioned in the briefing_context), explicitly state this in "evidence" and do NOT lower the score solely because it is out of scope; if an N/A or neutral level exists, prefer that.
@@ -39,17 +39,19 @@ You MUST respond with ONLY valid JSON in this EXACT format (no markdown, no extr
 IMPORTANT: Ensure all strings are JSON-safe (escape quotes, backslashes, and newlines). For "evidence", prefer short excerpts or paraphrases to avoid large blocks of raw code that might break the JSON format.
 
 The JSON object MUST contain:
-- "level_id": an integer ID of the selected scoring level.
+- "level_id": an integer ID of the selected scoring level. Use null ONLY when the criterion is out of scope for the project briefing.
 - "file_path": a string path to the most relevant file in the repository.
 - "evidence": a string with specific code excerpts or observations that justify the score (in Spanish).
 - "improvement": a string with concrete, actionable suggestions for the student (in Spanish).
+- "out_of_scope": a boolean indicating whether the criterion is outside the project briefing scope.
 
 Example of the required JSON structure:
 {
     "level_id": 1,
     "file_path": "src/main.py",
     "evidence": "En src/main.py, la función principal no gestiona correctamente los errores de entrada.",
-    "improvement": "Añade validaciones de entrada y manejo de excepciones en la función principal para evitar fallos en tiempo de ejecución."
+    "improvement": "Añade validaciones de entrada y manejo de excepciones en la función principal para evitar fallos en tiempo de ejecución.",
+    "out_of_scope": false
 }"""
 
 # GRADING PROMPT BUILDER
@@ -101,6 +103,7 @@ INSTRUCTIONS:
 3. Select the scoring level that BEST matches the code quality observed.
 4. Cite a specific file path and code snippet as evidence.
 5. Provide a concrete, actionable improvement suggestion.
+6. If the criterion is out of scope for the project according to briefing_context, return "out_of_scope": true and "level_id": null.
 
 {_JSON_SCHEMA_INSTRUCTION}"""
 

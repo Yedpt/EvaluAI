@@ -10,6 +10,7 @@ This module orchestrates the complete AI evaluation workflow:
 """
 
 import json
+import time
 from typing import List, Dict, Any, Optional
 
 from core.logging_config import logger
@@ -18,7 +19,7 @@ from core.database import SessionLocal
 from core.messages import Messages
 from models import Rubric, Criterion, Level
 from services.git_loader import GitLoaderService
-from services.ai_client import AIClient, AIProvider
+from services.ai_client import AIClient
 from services.context_engine import ContextEngine
 from services.prompts import build_grading_prompt, build_summary_prompt
 
@@ -38,6 +39,15 @@ class AIEvaluationEngine:
     embedding_provider = None
     embedding_model = None
     embedding_api_key = None
+    SUMMARY_MAX_RETRIES = 3
+    SUMMARY_RETRY_BASE_SECONDS = 2
+    OUT_OF_SCOPE_HINTS = (
+        "fuera del alcance",
+        "out of scope",
+        "no aplica",
+        "no aplica al proyecto",
+        "not mentioned in the briefing",
+    )
 
     def __init__(
         self,
@@ -55,8 +65,19 @@ class AIEvaluationEngine:
         if model is None:
             model = get_model(provider)
         
-        # If no API key provided, use settings based on provider
-        if api_key is None:
+        # If no API key provided, use settings based on provider except
+        # Gemini server-default mode with Vertex enabled (ADC path, no API key).
+        provider_value = getattr(provider, "value", provider)
+        if isinstance(provider_value, str):
+            provider_value = provider_value.lower().strip()
+
+        uses_vertex_default_gemini = (
+            provider_value == "gemini"
+            and api_key is None
+            and settings.VERTEX_ENABLED
+        )
+
+        if api_key is None and not uses_vertex_default_gemini:
             api_key = get_api_key(provider)
             
         self.embedding_provider = embedding_provider
@@ -128,7 +149,7 @@ class AIEvaluationEngine:
         # 4. Evaluate each criterion
         findings = []
         total_weighted_score = 0.0
-        total_weight = 0.0
+        max_possible = rubric_data.get('max_possible_score', 0.0)
         
         for criterion in rubric_data['criteria']:
             try:
@@ -141,14 +162,22 @@ class AIEvaluationEngine:
                 )
                 
                 if finding_result:
+                    finding_result['criterion_title'] = criterion['title']
                     findings.append(finding_result)
-                    total_weighted_score += finding_result['score_points'] * criterion['weight']
-                    total_weight += criterion['weight']
-                    logger.debug(f"Criterion '{criterion['title']}' evaluated: {finding_result['score_points']} points")
+                    criterion_max = max([l['score_points'] for l in criterion['levels']]) if criterion['levels'] else 0.0
+
+                    if finding_result.get('is_not_applicable'):
+                        # N/A criteria do not penalize the student score.
+                        max_possible -= criterion_max * criterion['weight']
+                        logger.debug(f"Criterion '{criterion['title']}' marked as N/A (out of scope)")
+                    else:
+                        total_weighted_score += finding_result['score_points'] * criterion['weight']
+                        logger.debug(f"Criterion '{criterion['title']}' evaluated: {finding_result['score_points']} points")
                 else:
                     # Create a failed finding record when _evaluate_criterion returns None
                     findings.append({
                         'criterion_id': criterion['id'],
+                        'criterion_title': criterion['title'],
                         'selected_level_id': None,
                         'file_path': None,
                         'evidence_snippet': None,
@@ -161,6 +190,7 @@ class AIEvaluationEngine:
                 # Create a failed finding record
                 findings.append({
                     'criterion_id': criterion['id'],
+                    'criterion_title': criterion['title'],
                     'selected_level_id': None,
                     'file_path': None,
                     'evidence_snippet': None,
@@ -172,11 +202,12 @@ class AIEvaluationEngine:
                 })
 
         # 5. Calculate total score and normalize to 100-point scale
-        max_possible = rubric_data.get('max_possible_score', 0.0)
         if max_possible > 0:
             total_score = (total_weighted_score / max_possible) * 100
         else:
             total_score = 0.0
+
+        total_score = round(total_score, 1)
             
         logger.debug(f"Evaluation completed. Total score: {total_score:.2f}")
 
@@ -385,6 +416,30 @@ class AIEvaluationEngine:
                 # Fallback if no JSON found
                 response_data = {"level_id": criterion['levels'][0]['id'], "evidence": "No JSON response found", "improvement": "Unable to parse response"}
             
+            evidence_text = str(response_data.get('evidence') or "")
+            improvement_text = str(response_data.get('improvement') or "")
+            out_of_scope = bool(response_data.get('out_of_scope')) or self._is_out_of_scope_response(
+                evidence_text,
+                improvement_text,
+            )
+
+            if out_of_scope:
+                normalized_improvement = improvement_text.strip()
+                if not normalized_improvement:
+                    normalized_improvement = "N/A: criterio fuera del alcance del proyecto según el briefing."
+                elif not normalized_improvement.lower().startswith("n/a"):
+                    normalized_improvement = f"N/A: {normalized_improvement}"
+
+                return {
+                    'criterion_id': criterion['id'],
+                    'selected_level_id': None,
+                    'file_path': response_data.get('file_path'),
+                    'evidence_snippet': evidence_text or "Criterio fuera del alcance definido en el briefing.",
+                    'improvement_suggestion': normalized_improvement,
+                    'score_points': 0.0,
+                    'is_not_applicable': True,
+                }
+
             # Find the selected level
             selected_level = None
             for level in criterion['levels']:
@@ -399,9 +454,10 @@ class AIEvaluationEngine:
                 'criterion_id': criterion['id'],
                 'selected_level_id': selected_level['id'],
                 'file_path': response_data.get('file_path'),
-                'evidence_snippet': response_data.get('evidence'),
-                'improvement_suggestion': response_data.get('improvement'),
-                'score_points': selected_level['score_points']
+                'evidence_snippet': evidence_text,
+                'improvement_suggestion': improvement_text,
+                'score_points': selected_level['score_points'],
+                'is_not_applicable': False,
             }
             
         except Exception as e:
@@ -413,8 +469,14 @@ class AIEvaluationEngine:
                 'file_path': None,
                 'evidence_snippet': f"Parse error: {str(e)}",
                 'improvement_suggestion': "Unable to parse AI response",
-                'score_points': criterion['levels'][0]['score_points']
+                'score_points': criterion['levels'][0]['score_points'],
+                'is_not_applicable': False,
             }
+
+    def _is_out_of_scope_response(self, evidence_text: str, improvement_text: str) -> bool:
+        """Detect out-of-scope evaluations from model text when JSON flag is missing."""
+        combined = f"{evidence_text} {improvement_text}".lower()
+        return any(hint in combined for hint in self.OUT_OF_SCOPE_HINTS)
 
     def _generate_ai_summary(
         self, 
@@ -453,10 +515,85 @@ class AIEvaluationEngine:
             total_score=total_score,
         )
 
-        try:
-            response_text = self.ai_client.chat(prompt)
-            return response_text
-            
-        except Exception as e:
-            logger.error(f"Failed to generate AI summary: {e}")
-            return f"Summary generation failed: {str(e)}"
+        last_error = None
+        for attempt in range(1, self.SUMMARY_MAX_RETRIES + 1):
+            try:
+                response_text = self.ai_client.chat(prompt)
+                return response_text
+            except Exception as e:
+                last_error = e
+                error_text = str(e)
+                is_quota_error = (
+                    "RESOURCE_EXHAUSTED" in error_text
+                    or "429" in error_text
+                )
+
+                if is_quota_error and attempt < self.SUMMARY_MAX_RETRIES:
+                    wait_seconds = self.SUMMARY_RETRY_BASE_SECONDS * attempt
+                    logger.warning(
+                        "Summary generation hit quota (attempt %s/%s). Retrying in %ss",
+                        attempt,
+                        self.SUMMARY_MAX_RETRIES,
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+                logger.error(f"Failed to generate AI summary: {e}")
+                break
+
+        return self._build_fallback_summary(
+            repo_url=repo_url,
+            rubric_title=rubric_title,
+            findings=findings_for_prompt,
+            total_score=total_score,
+            error=last_error,
+        )
+
+    def _build_fallback_summary(
+        self,
+        repo_url: str,
+        rubric_title: str,
+        findings: List[Dict[str, Any]],
+        total_score: float,
+        error: Exception | None,
+    ) -> str:
+        """Build a deterministic summary when AI summary generation is unavailable."""
+        total_findings = len(findings)
+        if total_findings == 0:
+            return (
+                f"Resumen automático no disponible temporalmente ({error}). "
+                "No se encontraron hallazgos para resumir."
+            )
+
+        sorted_findings = sorted(
+            findings,
+            key=lambda f: f.get("score_points", 0),
+            reverse=True,
+        )
+
+        top_items = sorted_findings[:3]
+        low_items = sorted_findings[-3:]
+
+        top_text = ", ".join(
+            [f"{f.get('criterion_title', 'Criterio')} ({f.get('score_points', 0)} pts)" for f in top_items]
+        )
+        low_text = ", ".join(
+            [f"{f.get('criterion_title', 'Criterio')} ({f.get('score_points', 0)} pts)" for f in low_items]
+        )
+
+        summary_lines = [
+            "Resumen generado en modo fallback por límite temporal de cuota del proveedor IA.",
+            f"Repositorio evaluado: {repo_url}",
+            f"Rúbrica: {rubric_title}",
+            f"Puntaje total: {total_score:.2f}/100",
+            f"Criterios evaluados: {total_findings}",
+            f"Fortalezas destacadas: {top_text}",
+            f"Áreas prioritarias de mejora: {low_text}",
+            "Sugerencia: reintentar en unos minutos para obtener un resumen narrativo completo del modelo.",
+        ]
+
+        if error is not None:
+            summary_lines.insert(1, f"Motivo técnico: {error}")
+
+        return "\n".join(summary_lines)

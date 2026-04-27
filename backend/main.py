@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from core.database import init_db, get_db
 from core.logging_config import setup_logging, logger
+from core.gcp_auth import configure_google_credentials_from_env
 from core.settings import settings
 from core.exception_handlers import register_exception_handlers
 from routers.rubrics import router as rubrics_router
@@ -19,6 +20,7 @@ setup_logging()
 async def lifespan(app: FastAPI):
     # Startup Logic
     logger.debug("🚀 Starting Evaluator RAG Backend...")
+    configure_google_credentials_from_env()
     init_db() 
     yield
     # Shutdown Logic

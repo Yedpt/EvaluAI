@@ -64,6 +64,14 @@ function scoreBadgeClass(score: number | null): string {
   return 'bg-red-100 text-red-700';
 }
 
+function formatScore(score: number | null): string {
+  if (score === null) return '—';
+  return score.toLocaleString('es-ES', {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+}
+
 /** Returns Tailwind classes for the status pill. */
 function statusClass(status: EvaluationResponse['status']): string {
   switch (status) {
@@ -235,7 +243,7 @@ export default function DashboardPage() {
                 <div className="h-9 w-20 bg-gray-100 rounded animate-pulse" />
               ) : (
                 <p className="text-3xl sm:text-4xl font-bold text-gray-900">
-                  {averageScore !== null ? averageScore : '—'}
+                  {formatScore(averageScore)}
                 </p>
               )}
             </div>
@@ -368,9 +376,7 @@ export default function DashboardPage() {
                         <span
                           className={`inline-flex items-center justify-center w-10 h-7 rounded-full text-xs font-bold ${scoreBadgeClass(ev.total_score)}`}
                         >
-                          {ev.total_score !== null
-                            ? Math.round(ev.total_score)
-                            : '—'}
+                          {formatScore(ev.total_score)}
                         </span>
                       </td>
 

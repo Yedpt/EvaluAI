@@ -602,28 +602,45 @@ def run_evaluation_task(
         logger.debug(f"Evaluation {evaluation_id} status updated to '{settings.EVALUATION_STATUS_PROCESSING}'")
         
         
-        # 1. Resolve ai provider, model and api_key based on the payload received from the frontend
+        # 1. Resolve provider/model/key based on request payload and server mode
         if ai_provider is None:
             ai_provider = AIProvider.GEMINI
         if ai_model is None:
             ai_model = get_model(ai_provider)
-        if ai_api_key is None: 
+
+        # For Gemini server-default with Vertex enabled, no API key is required.
+        uses_vertex_default_gemini = (
+            ai_provider == AIProvider.GEMINI
+            and ai_api_key is None
+            and settings.VERTEX_ENABLED
+        )
+
+        if ai_api_key is None and not uses_vertex_default_gemini:
             ai_api_key = get_api_key(ai_provider)
         
         # 2. Resolve embedding configuration based on business logic
         if ai_provider == AIProvider.GROQ:
             resolved_emb_provider = AIProvider.GEMINI
-            resolved_emb_model = settings.GEMINI_EMBEDDING_MODEL
-            resolved_emb_key =settings.GEMINI_API_KEY
+            if settings.VERTEX_ENABLED:
+                resolved_emb_model = settings.GEMINI_EMBEDDING_MODEL_VERTEX
+                resolved_emb_key = None
+            else:
+                resolved_emb_model = settings.GEMINI_EMBEDDING_MODEL
+                resolved_emb_key = settings.GEMINI_API_KEY
             logger.debug("Hybrid mode: Chat with GROQ and search with GEMINI")
         else:
             # For OpenAI and Gemini, use the same provider for embeddings
             resolved_emb_provider = ai_provider
             if ai_provider == AIProvider.OPENAI:
                 resolved_emb_model = settings.OPENAI_EMBEDDING_MODEL
+                resolved_emb_key = ai_api_key
             else:
-                resolved_emb_model = settings.GEMINI_EMBEDDING_MODEL
-            resolved_emb_key = ai_api_key
+                if settings.VERTEX_ENABLED and ai_api_key is None:
+                    resolved_emb_model = settings.GEMINI_EMBEDDING_MODEL_VERTEX
+                    resolved_emb_key = None
+                else:
+                    resolved_emb_model = settings.GEMINI_EMBEDDING_MODEL
+                    resolved_emb_key = ai_api_key
             
         # 3. Initialize AI evaluation engine
         ai_engine = AIEvaluationEngine(
